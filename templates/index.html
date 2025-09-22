@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RVM - ONNX.js Background Removal</title>
+    <script src="https://cdn.jsdelivr.net/npm/onnxjs/dist/onnx.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .demo-section {
+            margin: 30px 0;
+            padding: 25px;
+            border: 2px solid #f0f0f0;
+            border-radius: 15px;
+            background: #fafafa;
+        }
+        
+        .video-container {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .video-box {
+            position: relative;
+            border: 3px solid #667eea;
+            border-radius: 15px;
+            overflow: hidden;
+            background: #000;
+        }
+        
+        video, canvas {
+            display: block;
+            max-width: 400px;
+            width: 100%;
+            height: auto;
+        }
+        
+        .video-label {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
+        .controls {
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 25px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            margin: 5px;
+            transition: all 0.3s ease;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .status {
+            text-align: center;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+        
+        .status.loading {
+            background: #fff3cd;
+            color: #856404;
+        }
+        
+        .status.ready {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .background-colors {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin: 20px 0;
+        }
+        
+        .color-btn {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: 3px solid #fff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .color-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        .color-btn.active {
+            border-color: #667eea;
+            transform: scale(1.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎭 RVM Background Removal</h1>
+            <p>Real-time AI background removal with ONNX.js</p>
+        </div>
+        
+        <div class="content">
+            <div id="status" class="status loading">
+                🚀 Initializing... Please wait
+            </div>
+            
+            <!-- Model Conversion Instructions -->
+            <div class="demo-section">
+                <h2>📋 Setup Instructions</h2>
+                <p><strong>To use the actual RVM model:</strong></p>
+                <ol>
+                    <li>Run the Python script to convert PyTorch to ONNX</li>
+                    <li>Place the ONNX model in the web_model folder</li>
+                    <li>Refresh this page</li>
+                </ol>
+                <p><em>Currently using fallback processing for demo purposes.</em></p>
+            </div>
+            
+            <!-- Webcam Section -->
+            <div class="demo-section">
+                <h2>📹 Live Webcam Background Removal</h2>
+                <div class="video-container">
+                    <div class="video-box">
+                        <video id="webcam" autoplay muted playsinline></video>
+                        <div class="video-label">Original</div>
+                    </div>
+                    <div class="video-box">
+                        <canvas id="output"></canvas>
+                        <div class="video-label">AI Processed</div>
+                    </div>
+                </div>
+                <div class="controls">
+                    <button id="startBtn" onclick="startWebcam()">Start Camera</button>
+                    <button id="stopBtn" onclick="stopWebcam()" disabled>Stop Camera</button>
+                    <button onclick="toggleProcessing()">Toggle Processing</button>
+                </div>
+            </div>
+            
+            <!-- Background Selection -->
+            <div class="demo-section">
+                <h2>🎨 Background Colors</h2>
+                <div class="background-colors">
+                    <div class="color-btn active" style="background: #00ff00;" onclick="setBackground('#00ff00')"></div>
+                    <div class="color-btn" style="background: #0080ff;" onclick="setBackground('#0080ff')"></div>
+                    <div class="color-btn" style="background: #ffffff; border-color: #ccc;" onclick="setBackground('#ffffff')"></div>
+                    <div class="color-btn" style="background: #000000;" onclick="setBackground('#000000')"></div>
+                    <div class="color-btn" style="background: #ff6b35;" onclick="setBackground('#ff6b35')"></div>
+                    <div class="color-btn" style="background: #8e44ad;" onclick="setBackground('#8e44ad')"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let model = null;
+        let webcam = null;
+        let canvas = null;
+        let ctx = null;
+        let isProcessing = false;
+        let animationId = null;
+        let backgroundColor = '#00ff00';
+
+        async function initializeModel() {
+            try {
+                updateStatus('🔧 Initializing ONNX.js...', 'loading');
+                
+                // Try to load the ONNX model
+                try {
+                    const session = new onnx.InferenceSession();
+                    await session.loadModel('./web_model/rvm_resnet50_fp32.onnx');
+                    model = session;
+                    updateStatus('✅ RVM model loaded successfully!', 'ready');
+                } catch (error) {
+                    console.warn('ONNX model not found, using fallback:', error);
+                    model = 'fallback';
+                    updateStatus('⚠️ Using fallback processing (ONNX model not found)', 'ready');
+                }
+                
+            } catch (error) {
+                console.error('Error initializing:', error);
+                updateStatus('❌ Initialization failed', 'error');
+                model = 'fallback';
+            }
+        }
+
+        function updateStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+
+        async function startWebcam() {
+            try {
+                webcam = document.getElementById('webcam');
+                canvas = document.getElementById('output');
+                ctx = canvas.getContext('2d');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' }
+                });
+                
+                webcam.srcObject = stream;
+                webcam.onloadedmetadata = () => {
+                    canvas.width = webcam.videoWidth;
+                    canvas.height = webcam.videoHeight;
+                    startProcessing();
+                };
+                
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                
+            } catch (error) {
+                console.error('Error accessing webcam:', error);
+                alert('Could not access webcam. Please check permissions.');
+            }
+        }
+
+        function stopWebcam() {
+            if (webcam && webcam.srcObject) {
+                webcam.srcObject.getTracks().forEach(track => track.stop());
+                webcam.srcObject = null;
+            }
+            
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            
+            isProcessing = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        }
+
+        function toggleProcessing() {
+            isProcessing = !isProcessing;
+            if (!isProcessing && animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            } else if (isProcessing && webcam && webcam.srcObject) {
+                startProcessing();
+            }
+        }
+
+        function startProcessing() {
+            if (!webcam || !canvas || !ctx) return;
+            isProcessing = true;
+            processFrame();
+        }
+
+        async function processFrame() {
+            if (!isProcessing || !webcam || !canvas) return;
+            
+            try {
+                ctx.drawImage(webcam, 0, 0, canvas.width, canvas.height);
+                
+                if (model && model.run) {
+                    // Use ONNX model
+                    await runONNXModel();
+                } else {
+                    // Use fallback
+                    await applyFallbackProcessing();
+                }
+                
+            } catch (error) {
+                console.error('Error processing frame:', error);
+            }
+            
+            animationId = requestAnimationFrame(processFrame);
+        }
+
+        async function runONNXModel() {
+            try {
+                // Get image data from canvas
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+                
+                // Convert image data to tensor format for ONNX
+                const width = canvas.width;
+                const height = canvas.height;
+                const inputTensor = new Float32Array(3 * width * height);
+                
+                // Convert RGBA to RGB and normalize to 0-1 range
+                for (let i = 0; i < width * height; i++) {
+                    const pixelIndex = i * 4;
+                    inputTensor[i] = data[pixelIndex] / 255.0;     // R
+                    inputTensor[width * height + i] = data[pixelIndex + 1] / 255.0; // G
+                    inputTensor[2 * width * height + i] = data[pixelIndex + 2] / 255.0; // B
+                }
+                
+                // Create input tensor
+                const srcTensor = new onnx.Tensor(inputTensor, 'float32', [1, 3, height, width]);
+                
+                // Create recurrent state tensors (initialized to zeros for first frame)
+                const r1iTensor = new onnx.Tensor(new Float32Array(16 * Math.ceil(height/4) * Math.ceil(width/4)), 'float32', [1, 16, Math.ceil(height/4), Math.ceil(width/4)]);
+                const r2iTensor = new onnx.Tensor(new Float32Array(20 * Math.ceil(height/8) * Math.ceil(width/8)), 'float32', [1, 20, Math.ceil(height/8), Math.ceil(width/8)]);
+                const r3iTensor = new onnx.Tensor(new Float32Array(40 * Math.ceil(height/16) * Math.ceil(width/16)), 'float32', [1, 40, Math.ceil(height/16), Math.ceil(width/16)]);
+                const r4iTensor = new onnx.Tensor(new Float32Array(64 * Math.ceil(height/32) * Math.ceil(width/32)), 'float32', [1, 64, Math.ceil(height/32), Math.ceil(width/32)]);
+                
+                // Run inference
+                const outputMap = await model.run({
+                    'src': srcTensor,
+                    'r1i': r1iTensor,
+                    'r2i': r2iTensor,
+                    'r3i': r3iTensor,
+                    'r4i': r4iTensor
+                });
+                
+                // Get foreground and alpha outputs
+                const fgr = outputMap.get('fgr');
+                const pha = outputMap.get('pha');
+                
+                if (fgr && pha) {
+                    // Apply background replacement
+                    const bgColor = hexToRgb(backgroundColor);
+                    const newImageData = ctx.createImageData(width, height);
+                    const newData = newImageData.data;
+                    
+                    for (let i = 0; i < width * height; i++) {
+                        const alpha = pha.data[i];
+                        const pixelIndex = i * 4;
+                        
+                        // Composite foreground with background
+                        newData[pixelIndex] = Math.round((fgr.data[i] * alpha + (bgColor.r / 255) * (1 - alpha)) * 255);     // R
+                        newData[pixelIndex + 1] = Math.round((fgr.data[width * height + i] * alpha + (bgColor.g / 255) * (1 - alpha)) * 255); // G
+                        newData[pixelIndex + 2] = Math.round((fgr.data[2 * width * height + i] * alpha + (bgColor.b / 255) * (1 - alpha)) * 255); // B
+                        newData[pixelIndex + 3] = 255; // A
+                    }
+                    
+                    ctx.putImageData(newImageData, 0, 0);
+                } else {
+                    // Fallback if outputs are not available
+                    await applyFallbackProcessing();
+                }
+                
+            } catch (error) {
+                console.error('Error in ONNX inference:', error);
+                // Fallback to simple processing on error
+                await applyFallbackProcessing();
+            }
+        }
+
+        async function applyFallbackProcessing() {
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            const bgColor = hexToRgb(backgroundColor);
+            
+            // Simple background removal algorithm
+            for (let i = 0; i < data.length; i += 4) {
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                
+                // Detect background (simple heuristic)
+                const isBackground = detectBackground(r, g, b);
+                
+                if (isBackground) {
+                    data[i] = bgColor.r;
+                    data[i + 1] = bgColor.g;
+                    data[i + 2] = bgColor.b;
+                }
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        function detectBackground(r, g, b) {
+            // Simple background detection
+            const brightness = (r + g + b) / 3;
+            const colorVariation = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+            
+            // Detect uniform, bright areas as background
+            return brightness > 150 && colorVariation < 50;
+        }
+
+        function setBackground(color) {
+            backgroundColor = color;
+            document.querySelectorAll('.color-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : { r: 0, g: 255, b: 0 };
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', initializeModel);
+        window.addEventListener('beforeunload', stopWebcam);
+    </script>
+</body>
+</html>
