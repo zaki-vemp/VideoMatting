@@ -1,0 +1,285 @@
+<html>
+    <head>
+        <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.7.0/dist/tf.min.js"></script>
+        <script>
+            async function main() {
+                const video = document.querySelector('video');
+                const canvas = document.querySelector('canvas');
+                const select = document.querySelector('select');
+                const fpsSlider = document.querySelector('#fpsSlider');
+                const resolutionSelect = document.querySelector('#resolution');
+
+                // Get selected resolution
+                const getResolution = () => {
+                    const res = resolutionSelect.value.split('x');
+                    return { width: parseInt(res[0]), height: parseInt(res[1]) };
+                };
+
+                let { width, height } = getResolution();
+                video.width = width;
+                video.height = height;
+                
+                const webcam = await tf.data.webcam(video);
+                const model = await tf.loadGraphModel('model/model.json');
+
+                // Set initial recurrent state
+                let [r1i, r2i, r3i, r4i] = [tf.tensor(0.), tf.tensor(0.), tf.tensor(0.), tf.tensor(0.)];
+
+                // Adjustable downsample ratio for performance
+                let downsample_ratio = tf.tensor(0.25); // Lower = faster but less quality
+
+                let lastFrameTime = 0;
+                const targetFPS = () => parseInt(fpsSlider.value);
+
+                // Inference loop with frame skipping
+                while (true) {
+                    await tf.nextFrame();
+                    
+                    const now = performance.now();
+                    const frameInterval = 1000 / targetFPS();
+                    
+                    // Skip frame if not enough time has passed
+                    if (now - lastFrameTime < frameInterval) {
+                        continue;
+                    }
+                    lastFrameTime = now;
+
+                    // Check if resolution changed
+                    const newRes = getResolution();
+                    if (newRes.width !== width || newRes.height !== height) {
+                        width = newRes.width;
+                        height = newRes.height;
+                        video.width = width;
+                        video.height = height;
+                        // Reset recurrent states when resolution changes
+                        tf.dispose([r1i, r2i, r3i, r4i]);
+                        [r1i, r2i, r3i, r4i] = [tf.tensor(0.), tf.tensor(0.), tf.tensor(0.), tf.tensor(0.)];
+                    }
+
+                    const img = await webcam.capture();
+                    
+                    // Use tf.tidy for automatic memory management
+                    const result = tf.tidy(() => {
+                        const src = img.expandDims(0).div(255);
+                        return { src, img };
+                    });
+
+                    const [fgr, pha, r1o, r2o, r3o, r4o] = await model.executeAsync(
+                        {src: result.src, r1i, r2i, r3i, r4i, downsample_ratio},
+                        ['fgr', 'pha', 'r1o', 'r2o', 'r3o', 'r4o']
+                    );
+
+                    // Draw the result based on selected view
+                    const viewOption = select.value;
+                    if (viewOption === 'white') {
+                        drawMatte(fgr.clone(), pha.clone(), canvas);
+                        canvas.style.background = 'rgb(255, 255, 255)';
+                    } else if (viewOption === 'green') {
+                        drawMatte(fgr.clone(), pha.clone(), canvas);
+                        canvas.style.background = 'rgb(120, 255, 155)';
+                    } else if (viewOption === 'image') {
+                        await drawMatteWithImage(fgr.clone(), pha.clone(), canvas, 'unsplash.jpg');
+                    } else if (viewOption === 'alpha') {
+                        drawMatte(null, pha.clone(), canvas);
+                        canvas.style.background = 'rgb(0, 0, 0)';
+                    } else if (viewOption === 'foreground') {
+                        drawMatte(fgr.clone(), null, canvas);
+                    } else {
+                        // Skip expensive hidden state rendering on low-end devices
+                        if (viewOption.includes('recurrent')) {
+                            drawSimpleHidden(viewOption === 'recurrent1' ? r1o : 
+                                           viewOption === 'recurrent2' ? r2o :
+                                           viewOption === 'recurrent3' ? r3o : r4o, canvas);
+                        }
+                    }
+
+                    // Dispose tensors immediately
+                    tf.dispose([result.img, result.src, fgr, pha, r1i, r2i, r3i, r4i]);
+
+                    // Update recurrent states
+                    [r1i, r2i, r3i, r4i] = [r1o, r2o, r3o, r4o];
+
+                    // Force garbage collection periodically
+                    if (Math.random() < 0.1) { // 10% chance each frame
+                        if (window.gc) window.gc();
+                    }
+                }
+            }
+
+            // Optimized image compositing
+            async function drawMatteWithImage(fgr, pha, canvas, imagePath) {
+                // Cache the background image
+                if (!drawMatteWithImage.cachedBg || drawMatteWithImage.cachedPath !== imagePath) {
+                    const backgroundImg = new Image();
+                    backgroundImg.crossOrigin = "anonymous";
+                    
+                    await new Promise((resolve) => {
+                        backgroundImg.onload = () => {
+                            drawMatteWithImage.cachedBg = backgroundImg;
+                            drawMatteWithImage.cachedPath = imagePath;
+                            resolve();
+                        };
+                        backgroundImg.src = imagePath;
+                    });
+                }
+
+                const backgroundImg = drawMatteWithImage.cachedBg;
+                const [fgrHeight, fgrWidth] = fgr.shape.slice(1, 3);
+                
+                // Use OffscreenCanvas if available for better performance
+                const bgCanvas = window.OffscreenCanvas ? 
+                    new OffscreenCanvas(fgrWidth, fgrHeight) : 
+                    document.createElement('canvas');
+                
+                bgCanvas.width = fgrWidth;
+                bgCanvas.height = fgrHeight;
+                const bgCtx = bgCanvas.getContext('2d');
+                
+                bgCtx.drawImage(backgroundImg, 0, 0, fgrWidth, fgrHeight);
+                const bgImageData = bgCtx.getImageData(0, 0, fgrWidth, fgrHeight);
+                
+                const composite = tf.tidy(() => {
+                    // More efficient tensor operations
+                    const bgArray = new Float32Array(bgImageData.data.length / 4 * 3);
+                    for (let i = 0; i < bgImageData.data.length; i += 4) {
+                        const idx = (i / 4) * 3;
+                        bgArray[idx] = bgImageData.data[i] / 255;     // R
+                        bgArray[idx + 1] = bgImageData.data[i + 1] / 255; // G
+                        bgArray[idx + 2] = bgImageData.data[i + 2] / 255; // B
+                    }
+                    
+                    const bgTensor = tf.tensor3d(bgArray, [fgrHeight, fgrWidth, 3]);
+                    const alpha = pha.squeeze([0, 3]);
+                    const foreground = fgr.squeeze(0);
+                    const alphaMask = alpha.expandDims(-1);
+                    const invAlphaMask = tf.sub(1, alphaMask);
+                    
+                    const composited = tf.add(
+                        tf.mul(foreground, alphaMask),
+                        tf.mul(bgTensor, invAlphaMask)
+                    );
+                    
+                    return tf.concat([
+                        composited.mul(255).cast('int32'),
+                        tf.fill([fgrHeight, fgrWidth, 1], 255, 'int32')
+                    ], -1);
+                });
+                
+                // Draw to canvas
+                const pixelData = new Uint8ClampedArray(await composite.data());
+                const imageData = new ImageData(pixelData, fgrWidth, fgrHeight);
+                canvas.width = fgrWidth;
+                canvas.height = fgrHeight;
+                canvas.style.background = 'transparent';
+                canvas.getContext('2d').putImageData(imageData, 0, 0);
+                
+                // Clean up
+                composite.dispose();
+                fgr.dispose();
+                pha.dispose();
+            }
+
+            // Simplified version of drawMatte for better performance
+            async function drawMatte(fgr, pha, canvas) {
+                const rgba = tf.tidy(() => {
+                    const rgb = fgr !== null ? 
+                        fgr.squeeze(0).mul(255).cast('int32') :
+                        tf.fill([pha.shape[1], pha.shape[2], 3], 255, 'int32');
+                    const a = pha !== null ?
+                        pha.squeeze(0).mul(255).cast('int32') :
+                        tf.fill([rgb.shape[0], rgb.shape[1], 1], 255, 'int32');
+                    return tf.concat([rgb, a], -1);
+                });
+                
+                const [height, width] = rgba.shape.slice(0, 2);
+                const pixelData = new Uint8ClampedArray(await rgba.data());
+                const imageData = new ImageData(pixelData, width, height);
+                canvas.width = width;
+                canvas.height = height;
+                canvas.getContext('2d').putImageData(imageData, 0, 0);
+                
+                // Clean up
+                rgba.dispose();
+                fgr?.dispose();
+                pha?.dispose();
+            }
+
+            // Simplified hidden state visualization
+            async function drawSimpleHidden(r, canvas) {
+                const rgba = tf.tidy(() => {
+                    const simplified = r.squeeze(0).slice([0, 0, 0], [-1, -1, 1]);
+                    const normalized = simplified.add(1).mul(127.5).cast('int32');
+                    const rgb = normalized.tile([1, 1, 3]);
+                    return tf.concat([rgb, tf.fill([rgb.shape[0], rgb.shape[1], 1], 255, 'int32')], -1);
+                });
+                
+                const [height, width] = rgba.shape.slice(0, 2);
+                const pixelData = new Uint8ClampedArray(await rgba.data());
+                const imageData = new ImageData(pixelData, width, height);
+                canvas.width = width;
+                canvas.height = height;
+                canvas.getContext('2d').putImageData(imageData, 0, 0);
+                rgba.dispose();
+            }
+
+            window.addEventListener('load', main);
+        </script>
+    </head>
+    <body style="font-family: Arial, sans-serif; padding: 20px;">
+        <div style="margin-bottom: 15px;">
+            <label>Background Mode:</label>
+            <select>
+                <option value="white">White Background</option>
+                <option value="green">Green Background</option>
+                <option value="alpha">Alpha Matte</option>
+                <option value="foreground">Foreground Only</option>
+                <option value="image">Image Background</option>
+                <option value="recurrent1">Debug: Recurrent 1</option>
+                <option value="recurrent2">Debug: Recurrent 2</option>
+                <option value="recurrent3">Debug: Recurrent 3</option>
+                <option value="recurrent4">Debug: Recurrent 4</option>
+            </select>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label>Resolution (lower = faster):</label>
+            <select id="resolution">
+                <option value="320x240">320x240 (Fastest)</option>
+                <option value="480x360">480x360 (Fast)</option>
+                <option value="640x480" selected>640x480 (Balanced)</option>
+                <option value="800x600">800x600 (Quality)</option>
+            </select>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <label>Target FPS: <span id="fpsValue">15</span></label><br>
+            <input type="range" id="fpsSlider" min="5" max="30" value="15" 
+                   oninput="document.getElementById('fpsValue').textContent = this.value">
+            <small style="display: block; color: #666;">Lower FPS = better performance</small>
+        </div>
+
+        <div style="margin-bottom: 15px;">
+            <button onclick="location.reload()" style="padding: 8px 16px;">Restart App</button>
+            <small style="display: block; color: #666; margin-top: 5px;">
+                Memory usage: <span id="memoryInfo">-</span>
+            </small>
+        </div>
+
+        <div style="display: flex; gap: 20px; align-items: start;">
+            <video style="border: 2px solid #ddd; border-radius: 8px;"></video>
+            <canvas style="border: 2px solid #ddd; border-radius: 8px;"></canvas>
+        </div>
+
+        <script>
+            // Memory monitoring
+            setInterval(() => {
+                if (window.performance && window.performance.memory) {
+                    const memory = window.performance.memory;
+                    const used = Math.round(memory.usedJSHeapSize / 1048576);
+                    const total = Math.round(memory.totalJSHeapSize / 1048576);
+                    document.getElementById('memoryInfo').textContent = `${used}MB / ${total}MB`;
+                }
+            }, 2000);
+        </script>
+    </body>
+</html>
